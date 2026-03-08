@@ -89,7 +89,7 @@ Available through remote entity UI pages.
 
 ## Camera Entities (Protect)
 
-Automatically discovered when UniFi Protect is available. Cameras are exposed as media player entities using the [uc-intg-cctv](https://github.com/nicjo/uc-intg-cctv) playbook pattern.
+Automatically discovered when UniFi Protect is available. Cameras are exposed as media player entities using the [uc-intg-cctv](https://github.com/mase1981/uc-intg-cctv) playbook pattern.
 
 | Entity | Description |
 |--------|-------------|
