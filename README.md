@@ -163,4 +163,4 @@ Mozilla Public License 2.0 (MPL-2.0)
 
 ---
 
-**Made by [Meir Miyara](https://www.linkedin.com/in/meir-miyara/) for the Unfolded Circle and UniFi communities**
+**Made by [Meir Miyara](https://www.linkedin.com/in/meirmiyara/) for the Unfolded Circle and UniFi communities**
