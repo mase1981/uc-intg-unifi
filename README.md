@@ -113,6 +113,8 @@ Automatically discovered when UniFi Protect is available. Cameras are exposed as
 4. Configure: Enter UniFi Console IP, username, and password
 5. Done - entities are created automatically
 
+> **Important:** After installation or a Remote reboot, it takes up to **30 seconds** for the integration to connect to your UniFi Console and for all entities (remote, sensors, selects, cameras) to sync and update with live data.
+
 ### Option 2: Docker (Advanced Users)
 
 The integration is available as a pre-built Docker image from GitHub Container Registry:
