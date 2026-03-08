@@ -1,5 +1,9 @@
 # UniFi Network & Protect Integration for Unfolded Circle Remote
 
+<p align="center">
+  <img src="assets/unifi-logo.png" alt="UniFi Integration" width="128">
+</p>
+
 [![GitHub Release](https://img.shields.io/github/v/release/mase1981/uc-intg-unifi?style=flat-square)](https://github.com/mase1981/uc-intg-unifi/releases)
 ![License](https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square)
 [![GitHub issues](https://img.shields.io/github/issues/mase1981/uc-intg-unifi?style=flat-square)](https://github.com/mase1981/uc-intg-unifi/issues)
@@ -70,17 +74,17 @@ Available through remote entity UI pages.
 |------|----------|
 | WiFi | Enable/Disable each WiFi network |
 | Guest | Enable/Disable guest networks |
-| Devices | Reboot any network device |
+| Devices | Reboot discovered UniFi devices that support restart |
 
 ---
 
 ## Camera Entities (Protect)
 
-Automatically discovered when UniFi Protect is available.
+Automatically discovered when UniFi Protect is available. Cameras are exposed as media player entities using the [uc-intg-cctv](https://github.com/nicjo/uc-intg-cctv) playbook pattern.
 
 | Entity | Description |
 |--------|-------------|
-| Camera | Live view and snapshot |
+| Camera (Media Player) | Snapshot display via media player entity |
 | Motion Sensor | Motion detection binary sensor |
 | Privacy Switch | Enable/disable privacy mode |
 | Recording Mode | Select recording mode |
@@ -148,4 +152,4 @@ Mozilla Public License 2.0 (MPL-2.0)
 
 ---
 
-**Made with care for the Unfolded Circle and UniFi communities**
+**Made by [Meir Miyara](https://github.com/mase1981) for the Unfolded Circle and UniFi communities**
