@@ -1,8 +1,6 @@
 # UniFi Network & Protect Integration for Unfolded Circle Remote
 
-<p align="center">
-  <img src="assets/unifi-logo.png" alt="UniFi Integration" width="128">
-</p>
+![UniFi](https://img.shields.io/badge/UniFi-Network%20%26%20Protect-0559C9?style=flat-square&logo=ubiquiti)
 
 [![GitHub Release](https://img.shields.io/github/v/release/mase1981/uc-intg-unifi?style=flat-square)](https://github.com/mase1981/uc-intg-unifi/releases)
 ![License](https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square)
@@ -152,4 +150,4 @@ Mozilla Public License 2.0 (MPL-2.0)
 
 ---
 
-**Made by [Meir Miyara](https://github.com/mase1981) for the Unfolded Circle and UniFi communities**
+**Made by [Meir Miyara](https://www.linkedin.com/in/meir-miyara/) for the Unfolded Circle and UniFi communities**
