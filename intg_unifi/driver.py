@@ -7,15 +7,7 @@ import logging
 
 from ucapi_framework import BaseIntegrationDriver
 
-from intg_unifi.camera import (
-    ProtectCamera,
-    ProtectCameraBinarySensor,
-    ProtectCameraButton,
-    ProtectCameraFloodlight,
-    ProtectCameraIRModeSelect,
-    ProtectCameraRecordingModeSelect,
-    ProtectCameraSwitch,
-)
+from intg_unifi.camera import ProtectCameraMediaPlayer, ProtectCameraSelect
 from intg_unifi.config import UniFiConfig
 from intg_unifi.device import UniFiDevice
 from intg_unifi.poe import PoEOffSelect, PoEOnSelect
@@ -23,12 +15,6 @@ from intg_unifi.remote import UniFiRemote
 from intg_unifi.wan import ConnectedClientsSensor, WANSpeedSensor, WANStatusSensor
 
 _LOG = logging.getLogger(__name__)
-
-
-def _has_floodlight(camera: dict) -> bool:
-    """Check if camera has floodlight capability."""
-    features = camera.get("featureFlags", {})
-    return features.get("hasFloodlight", False) or features.get("hasLedSpot", False)
 
 
 class UniFiDriver(BaseIntegrationDriver[UniFiDevice, UniFiConfig]):
@@ -58,6 +44,7 @@ class UniFiDriver(BaseIntegrationDriver[UniFiDevice, UniFiConfig]):
             ],
             driver_id="unifi",
         )
+        self._camera_media_players: dict[str, ProtectCameraMediaPlayer] = {}
         _LOG.info("UniFi driver initialized")
 
     def _add_and_configure_entity(self, entity) -> None:
@@ -87,20 +74,22 @@ class UniFiDriver(BaseIntegrationDriver[UniFiDevice, UniFiConfig]):
             self._add_and_configure_entity(remote)
             _LOG.info("[%s] Dynamically added remote entity with UI pages", cfg.name)
 
-        if device.has_protect:
-            for cam_id in device.cameras.keys():
-                cam_entity_id = f"media_player.{cfg.identifier}.camera_{cam_id}"
-                if not self.api.available_entities.contains(cam_entity_id):
-                    self._add_and_configure_entity(ProtectCamera(cfg, device, cam_id))
-                    self._add_and_configure_entity(ProtectCameraBinarySensor(cfg, device, cam_id, "motion"))
-                    self._add_and_configure_entity(ProtectCameraSwitch(cfg, device, cam_id, "privacy"))
-                    self._add_and_configure_entity(ProtectCameraRecordingModeSelect(cfg, device, cam_id))
-                    self._add_and_configure_entity(ProtectCameraIRModeSelect(cfg, device, cam_id))
-                    self._add_and_configure_entity(ProtectCameraButton(cfg, device, cam_id, "reboot"))
-                    cam = device.cameras.get(cam_id, {})
-                    if _has_floodlight(cam):
-                        self._add_and_configure_entity(ProtectCameraFloodlight(cfg, device, cam_id))
-            _LOG.info("[%s] Dynamically added %d camera entities", cfg.name, len(device.cameras))
+        if device.has_protect and device.cameras:
+            mp_id = f"media_player.{cfg.identifier}.protect_cameras"
+            if not self.api.available_entities.contains(mp_id):
+                mp = ProtectCameraMediaPlayer(cfg, device)
+                mp.set_api(self.api)
+
+                select = ProtectCameraSelect(cfg, device, mp)
+                select.set_api(self.api)
+
+                mp.set_select_entity(select)
+
+                self._add_and_configure_entity(mp)
+                self._add_and_configure_entity(select)
+                self._camera_media_players[device_id] = mp
+
+                _LOG.info("[%s] Dynamically added Protect camera entities (%d cameras)", cfg.name, len(device.cameras))
 
     def on_device_removed(self, device_config) -> None:
         """Handle device removal."""
@@ -108,10 +97,16 @@ class UniFiDriver(BaseIntegrationDriver[UniFiDevice, UniFiConfig]):
             _LOG.info("Clearing all devices - disconnecting first")
             for device in list(self._device_instances.values()):
                 self._loop.create_task(device.disconnect())
+            for mp in self._camera_media_players.values():
+                self._loop.create_task(mp.disconnect())
+            self._camera_media_players.clear()
         else:
             device_id = self.get_device_id(device_config)
             device = self._device_instances.get(device_id)
             if device:
                 _LOG.info("Removing device - disconnecting: %s", device_id)
                 self._loop.create_task(device.disconnect())
+            mp = self._camera_media_players.pop(device_id, None)
+            if mp:
+                self._loop.create_task(mp.disconnect())
         super().on_device_removed(device_config)

@@ -1,329 +1,330 @@
-"""UniFi Protect camera entities - ALL camera-related entity types.
+"""UniFi Protect camera entities - Media player with source switching + select.
+
+Follows the uc-intg-cctv pattern: single media player with all cameras as sources,
+10-second snapshot refresh loop, and a select entity for camera switching.
 
 :copyright: (c) 2026 by Meir Miyara.
 :license: MPL-2.0
 """
+import asyncio
+import base64
+import io
 import logging
+import time
 from typing import Any
 
 from ucapi import StatusCodes
-from ucapi.button import Attributes as ButtonAttributes, Button, Commands as ButtonCommands
-from ucapi.light import Attributes as LightAttributes, Commands as LightCommands, Features as LightFeatures, Light, States as LightStates
-from ucapi.media_player import Attributes as MediaAttributes, DeviceClasses as MediaClasses, MediaPlayer, States as MediaStates
-from ucapi.select import Attributes as SelectAttributes, Select, States as SelectStates
-from ucapi.sensor import Attributes as SensorAttributes, DeviceClasses as SensorClasses, Sensor, States as SensorStates
-from ucapi.switch import Attributes as SwitchAttributes, DeviceClasses as SwitchClasses, States as SwitchStates, Switch
+from ucapi.media_player import (
+    Attributes as MediaAttributes,
+    Commands as MediaCommands,
+    Features as MediaFeatures,
+    MediaPlayer,
+    MediaType,
+    States as MediaStates,
+)
+from ucapi.select import (
+    Attributes as SelectAttributes,
+    Commands as SelectCommands,
+    Select,
+    States as SelectStates,
+)
 
 from intg_unifi.config import UniFiConfig
 from intg_unifi.device import UniFiDevice
 
 _LOG = logging.getLogger(__name__)
 
+SNAPSHOT_REFRESH_RATE = 10
+MAX_CONSECUTIVE_FAILURES = 5
+IMAGE_MAX_WIDTH = 320
+IMAGE_MAX_HEIGHT = 240
+IMAGE_MAX_SIZE_KB = 80
 
-def _get_camera_name(camera: dict | None, camera_id: str) -> str:
-    """Get camera name from API dict."""
-    if not camera:
-        return f"Camera {camera_id}"
-    return camera.get("name") or camera.get("displayName") or f"Camera {camera_id}"
+
+def _optimize_image(image_data: bytes) -> str | None:
+    """Optimize camera snapshot for UC Remote display (320x240, <80KB JPEG, base64)."""
+    try:
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(image_data))
+
+        img_ratio = image.width / image.height
+        screen_ratio = IMAGE_MAX_WIDTH / IMAGE_MAX_HEIGHT
+
+        if img_ratio > screen_ratio:
+            new_width = IMAGE_MAX_WIDTH
+            new_height = int(IMAGE_MAX_WIDTH / img_ratio)
+        else:
+            new_height = IMAGE_MAX_HEIGHT
+            new_width = int(IMAGE_MAX_HEIGHT * img_ratio)
+
+        resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        if resized.mode != "RGB":
+            resized = resized.convert("RGB")
+
+        quality = 85
+        buf = io.BytesIO()
+        while quality > 20:
+            buf.seek(0)
+            buf.truncate()
+            resized.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
+            if buf.tell() / 1024 <= IMAGE_MAX_SIZE_KB:
+                break
+            quality -= 10
+
+        buf.seek(0)
+        return base64.b64encode(buf.read()).decode("utf-8")
+    except Exception as err:
+        _LOG.error("Image optimization failed: %s", err)
+        return None
 
 
-class ProtectCamera(MediaPlayer):
-    """Camera snapshot display via media_player (UC Remote has no video entity)."""
+class ProtectCameraMediaPlayer(MediaPlayer):
+    """Single media player displaying all Protect cameras as switchable sources."""
 
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str):
-        """Initialize camera media player."""
+    def __init__(self, device_config: UniFiConfig, device: UniFiDevice):
         self._device = device
-        self._camera_id = camera_id
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"media_player.{device_config.identifier}_camera_{camera_id}"
+        self._cfg = device_config
 
-        is_connected = camera.get("isConnected", False) if camera else False
+        source_list = []
+        self._camera_id_by_name: dict[str, str] = {}
+        for cam_id, cam in device.cameras.items():
+            name = cam.get("name") or cam.get("displayName") or f"Camera {cam_id}"
+            source_list.append(name)
+            self._camera_id_by_name[name] = cam_id
+
+        current_source = source_list[0] if source_list else ""
+        entity_id = f"media_player.{device_config.identifier}.protect_cameras"
+
         super().__init__(
             entity_id,
-            f"{device_config.name} - {camera_name}",
-            [],
+            f"{device_config.name} - Cameras",
+            [MediaFeatures.ON_OFF, MediaFeatures.SELECT_SOURCE],
             {
-                MediaAttributes.STATE: MediaStates.ON if is_connected else MediaStates.OFF,
+                MediaAttributes.STATE: MediaStates.OFF,
+                MediaAttributes.MEDIA_TYPE: MediaType.VIDEO,
+                MediaAttributes.SOURCE_LIST: source_list,
+                MediaAttributes.SOURCE: current_source,
                 MediaAttributes.MEDIA_IMAGE_URL: "",
+                MediaAttributes.MEDIA_TITLE: current_source,
+                MediaAttributes.MEDIA_ARTIST: "Camera View",
             },
-            device_class=MediaClasses.STREAMING,
+            device_class="tv",
             cmd_handler=self.handle_command,
         )
+
+        self.current_source = current_source
+        self.is_streaming = False
+        self._stream_task: asyncio.Task | None = None
+        self._last_image_update = 0
+        self._select_entity: Any | None = None
+        self._api_ref: Any | None = None
+
+        _LOG.info("[%s] Created camera media player with %d sources", device_config.name, len(source_list))
+
+    def set_api(self, api: Any) -> None:
+        self._api_ref = api
+
+    def set_select_entity(self, select_entity: Any) -> None:
+        self._select_entity = select_entity
+
+    @property
+    def _current_camera_id(self) -> str | None:
+        return self._camera_id_by_name.get(self.current_source)
 
     async def handle_command(self, entity: MediaPlayer, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle commands (none supported for snapshot display)."""
-        return StatusCodes.NOT_IMPLEMENTED
-
-
-class ProtectCameraBinarySensor(Sensor):
-    """Camera binary sensors (motion, doorbell, recording) - uses Sensor with BINARY device class."""
-
-    SENSOR_TYPES = {
-        "motion": ("Motion", "motion", "is_motion_detected"),
-        "doorbell": ("Doorbell", "doorbell", "is_ringing"),
-        "recording": ("Recording", "recording", "is_recording"),
-    }
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str, sensor_type: str):
-        """Initialize camera binary sensor."""
-        self._device = device
-        self._camera_id = camera_id
-        self._sensor_type = sensor_type
-
-        if sensor_type not in self.SENSOR_TYPES:
-            raise ValueError(f"Invalid sensor type: {sensor_type}")
-
-        name_suffix, unit_label, self._attr_name = self.SENSOR_TYPES[sensor_type]
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"sensor.{device_config.identifier}_{sensor_type}_{camera_id}"
-
-        super().__init__(
-            entity_id,
-            f"{device_config.name} - {camera_name} {name_suffix}",
-            [],
-            {SensorAttributes.STATE: SensorStates.UNAVAILABLE, SensorAttributes.VALUE: "off"},
-            device_class=SensorClasses.BINARY,
-            options={"custom_unit": unit_label},
-        )
-
-    def update_state(self):
-        """Update binary sensor state from camera."""
-        camera = self._device.cameras.get(self._camera_id)
-        if camera:
-            is_active = camera.get(self._attr_name, False)
-            self.attributes[SensorAttributes.STATE] = SensorStates.ON
-            self.attributes[SensorAttributes.VALUE] = "on" if is_active else "off"
-
-
-class ProtectCameraSwitch(Switch):
-    """Camera switches (privacy, status light, HDR, high FPS)."""
-
-    SWITCH_TYPES = {
-        "privacy": ("Privacy Mode", "privacyMode"),
-        "status_light": ("Status Light", "ledSettings.isEnabled"),
-        "hdr": ("HDR Mode", "hdrMode"),
-        "high_fps": ("High FPS Mode", "videoMode"),
-    }
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str, switch_type: str):
-        """Initialize camera switch."""
-        self._device = device
-        self._camera_id = camera_id
-        self._switch_type = switch_type
-
-        if switch_type not in self.SWITCH_TYPES:
-            raise ValueError(f"Invalid switch type: {switch_type}")
-
-        name_suffix, self._state_path = self.SWITCH_TYPES[switch_type]
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"switch.{device_config.identifier}_{switch_type}_{camera_id}"
-
-        super().__init__(
-            entity_id,
-            f"{device_config.name} - {camera_name} {name_suffix}",
-            [],
-            {SwitchAttributes.STATE: SwitchStates.UNAVAILABLE},
-            device_class=SwitchClasses.SWITCH,
-            cmd_handler=self.handle_command,
-        )
-
-    async def handle_command(self, entity: Switch, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle switch commands."""
-        if cmd_id == "toggle":
-            current_state = self.attributes.get(SwitchAttributes.STATE) == SwitchStates.ON
-            method = getattr(self._device, f"set_camera_{self._switch_type}")
-            success = await method(self._camera_id, not current_state)
-            if success:
-                self.attributes[SwitchAttributes.STATE] = SwitchStates.OFF if current_state else SwitchStates.ON
-                return StatusCodes.OK
+        try:
+            if cmd_id == MediaCommands.ON:
+                return await self._turn_on()
+            elif cmd_id == MediaCommands.OFF:
+                return await self._turn_off()
+            elif cmd_id == MediaCommands.SELECT_SOURCE:
+                source = params.get("source") if params else None
+                return await self._select_source(source)
+            return StatusCodes.NOT_IMPLEMENTED
+        except Exception as err:
+            _LOG.error("Command %s failed: %s", cmd_id, err, exc_info=True)
             return StatusCodes.SERVER_ERROR
-        return StatusCodes.NOT_IMPLEMENTED
 
-    def update_state(self):
-        """Update switch state from camera."""
-        camera = self._device.cameras.get(self._camera_id)
-        if not camera:
+    async def _turn_on(self) -> StatusCodes:
+        if not self._current_camera_id:
+            return StatusCodes.BAD_REQUEST
+        self.attributes[MediaAttributes.STATE] = MediaStates.PLAYING
+        self.attributes[MediaAttributes.MEDIA_TITLE] = self.current_source
+        self._push_state()
+        await self._start_streaming()
+        return StatusCodes.OK
+
+    async def _turn_off(self) -> StatusCodes:
+        await self._stop_streaming()
+        self.attributes[MediaAttributes.STATE] = MediaStates.OFF
+        self.attributes[MediaAttributes.MEDIA_IMAGE_URL] = ""
+        self._push_state()
+        return StatusCodes.OK
+
+    async def _select_source(self, source_name: str) -> StatusCodes:
+        if not source_name or source_name not in self._camera_id_by_name:
+            return StatusCodes.BAD_REQUEST
+
+        was_streaming = self.is_streaming
+        if was_streaming:
+            await self._stop_streaming()
+
+        self.current_source = source_name
+        self.attributes[MediaAttributes.SOURCE] = source_name
+        self.attributes[MediaAttributes.MEDIA_TITLE] = source_name
+        self.attributes[MediaAttributes.STATE] = MediaStates.PLAYING
+        self._push_state()
+
+        if self._select_entity:
+            self._select_entity.update_from_media_player(source_name)
+
+        await asyncio.sleep(0.1)
+        await self._start_streaming()
+        return StatusCodes.OK
+
+    def _push_state(self) -> None:
+        api = self._api_ref
+        if not api or not api.configured_entities.contains(self.id):
             return
-        if self._switch_type == "privacy":
-            is_on = camera.get("privacyMode", False)
-        elif self._switch_type == "status_light":
-            led = camera.get("ledSettings", {})
-            is_on = led.get("isEnabled", False)
-        elif self._switch_type == "hdr":
-            is_on = camera.get("hdrMode", False)
-        elif self._switch_type == "high_fps":
-            is_on = camera.get("videoMode") == "highFps"
-        else:
-            is_on = False
-        self.attributes[SwitchAttributes.STATE] = SwitchStates.ON if is_on else SwitchStates.OFF
+        api.configured_entities.update_attributes(self.id, {
+            MediaAttributes.STATE: self.attributes[MediaAttributes.STATE],
+            MediaAttributes.SOURCE: self.attributes[MediaAttributes.SOURCE],
+            MediaAttributes.MEDIA_TITLE: self.attributes[MediaAttributes.MEDIA_TITLE],
+            MediaAttributes.MEDIA_IMAGE_URL: self.attributes.get(MediaAttributes.MEDIA_IMAGE_URL, ""),
+            MediaAttributes.MEDIA_ARTIST: self.attributes.get(MediaAttributes.MEDIA_ARTIST, "Camera View"),
+        })
+
+    async def _start_streaming(self) -> None:
+        if self.is_streaming or not self._current_camera_id:
+            return
+        self.is_streaming = True
+        self._stream_task = asyncio.create_task(self._stream_loop())
+        _LOG.info("[%s] Started streaming %s (%ds refresh)", self._cfg.name, self.current_source, SNAPSHOT_REFRESH_RATE)
+
+    async def _stop_streaming(self) -> None:
+        self.is_streaming = False
+        if self._stream_task:
+            self._stream_task.cancel()
+            try:
+                await self._stream_task
+            except asyncio.CancelledError:
+                pass
+            self._stream_task = None
+
+    async def _stream_loop(self) -> None:
+        failures = 0
+        while self.is_streaming and self._current_camera_id:
+            try:
+                image_data = await self._device.get_camera_snapshot_bytes(self._current_camera_id)
+                if image_data:
+                    optimized = _optimize_image(image_data)
+                    if optimized:
+                        self.attributes[MediaAttributes.MEDIA_IMAGE_URL] = f"data:image/jpeg;base64,{optimized}"
+                        self._last_image_update = time.time()
+                        self._push_state()
+                        failures = 0
+                    else:
+                        failures += 1
+                else:
+                    failures += 1
+
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    _LOG.error("[%s] Max snapshot failures for %s", self._cfg.name, self.current_source)
+                    self.attributes[MediaAttributes.STATE] = MediaStates.UNAVAILABLE
+                    self.attributes[MediaAttributes.MEDIA_IMAGE_URL] = ""
+                    self._push_state()
+                    self.is_streaming = False
+                    break
+
+                await asyncio.sleep(SNAPSHOT_REFRESH_RATE)
+            except asyncio.CancelledError:
+                break
+            except Exception as err:
+                _LOG.error("[%s] Stream error: %s", self._cfg.name, err)
+                failures += 1
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    self.is_streaming = False
+                    break
+                await asyncio.sleep(5)
+
+    async def disconnect(self) -> None:
+        await self._stop_streaming()
 
 
-class ProtectCameraRecordingModeSelect(Select):
-    """Camera recording mode select."""
+class ProtectCameraSelect(Select):
+    """Select entity for switching between Protect cameras."""
 
-    RECORDING_MODES = ["always", "motion", "never", "detections"]
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str):
-        """Initialize recording mode select."""
+    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, media_player: ProtectCameraMediaPlayer):
         self._device = device
-        self._camera_id = camera_id
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"select.{device_config.identifier}_recording_mode_{camera_id}"
+        self._media_player = media_player
 
-        rec_settings = camera.get("recordingSettings", {}) if camera else {}
-        current_mode = rec_settings.get("mode", "motion")
+        camera_options = list(media_player._camera_id_by_name.keys())
+        current_option = camera_options[0] if camera_options else ""
+        entity_id = f"select.{device_config.identifier}.protect_camera_selector"
 
         super().__init__(
             entity_id,
-            f"{device_config.name} - {camera_name} Recording Mode",
+            f"{device_config.name} - Camera Selector",
             {
-                SelectAttributes.STATE: SelectStates.ON if camera else SelectStates.UNAVAILABLE,
-                SelectAttributes.VALUE: current_mode,
-                SelectAttributes.OPTIONS: self.RECORDING_MODES,
+                SelectAttributes.STATE: SelectStates.ON,
+                SelectAttributes.OPTIONS: camera_options,
+                SelectAttributes.CURRENT_OPTION: current_option,
             },
             cmd_handler=self.handle_command,
         )
+        self._api_ref: Any | None = None
+
+    def set_api(self, api: Any) -> None:
+        self._api_ref = api
 
     async def handle_command(self, entity: Select, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle select commands."""
-        if cmd_id == "select_option" and params and "option" in params:
-            mode = params["option"]
-            if mode in self.RECORDING_MODES:
-                success = await self._device.set_camera_recording(self._camera_id, mode)
-                if success:
-                    self.attributes[SelectAttributes.VALUE] = mode
-                    self.attributes[SelectAttributes.STATE] = SelectStates.ON
-                    return StatusCodes.OK
-            return StatusCodes.BAD_REQUEST
-        return StatusCodes.NOT_IMPLEMENTED
-
-
-class ProtectCameraIRModeSelect(Select):
-    """Camera IR mode select."""
-
-    IR_MODES = ["auto", "on", "off", "autoFilterOnly"]
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str):
-        """Initialize IR mode select."""
-        self._device = device
-        self._camera_id = camera_id
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"select.{device_config.identifier}_ir_mode_{camera_id}"
-
-        isp_settings = camera.get("ispSettings", {}) if camera else {}
-        current_mode = isp_settings.get("irLedMode", "auto")
-
-        super().__init__(
-            entity_id,
-            f"{device_config.name} - {camera_name} IR Mode",
-            {
-                SelectAttributes.STATE: SelectStates.ON if camera else SelectStates.UNAVAILABLE,
-                SelectAttributes.VALUE: current_mode,
-                SelectAttributes.OPTIONS: self.IR_MODES,
-            },
-            cmd_handler=self.handle_command,
-        )
-
-    async def handle_command(self, entity: Select, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle select commands."""
-        if cmd_id == "select_option" and params and "option" in params:
-            mode = params["option"]
-            if mode in self.IR_MODES:
-                success = await self._device.set_camera_ir_mode(self._camera_id, mode)
-                if success:
-                    self.attributes[SelectAttributes.VALUE] = mode
-                    self.attributes[SelectAttributes.STATE] = SelectStates.ON
-                    return StatusCodes.OK
-            return StatusCodes.BAD_REQUEST
-        return StatusCodes.NOT_IMPLEMENTED
-
-
-class ProtectCameraButton(Button):
-    """Camera buttons (reboot, snapshot)."""
-
-    BUTTON_TYPES = {
-        "reboot": "Reboot Camera",
-        "snapshot": "Take Snapshot",
-    }
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str, button_type: str):
-        """Initialize camera button."""
-        self._device = device
-        self._camera_id = camera_id
-        self._button_type = button_type
-
-        if button_type not in self.BUTTON_TYPES:
-            raise ValueError(f"Invalid button type: {button_type}")
-
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"button.{device_config.identifier}_{button_type}_{camera_id}"
-
-        super().__init__(
-            entity_id,
-            f"{device_config.name} - {camera_name} {self.BUTTON_TYPES[button_type]}",
-            cmd_handler=self.handle_command,
-        )
-
-    async def handle_command(self, entity: Button, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle button commands."""
-        if cmd_id == ButtonCommands.PUSH:
-            if self._button_type == "reboot":
-                success = await self._device.reboot_camera(self._camera_id)
-            elif self._button_type == "snapshot":
-                success = await self._device.take_camera_snapshot(self._camera_id)
-            else:
-                return StatusCodes.NOT_IMPLEMENTED
-
-            return StatusCodes.OK if success else StatusCodes.SERVER_ERROR
-        return StatusCodes.NOT_IMPLEMENTED
-
-
-class ProtectCameraFloodlight(Light):
-    """Camera floodlight control (for cameras with floodlights)."""
-
-    def __init__(self, device_config: UniFiConfig, device: UniFiDevice, camera_id: str):
-        """Initialize floodlight."""
-        self._device = device
-        self._camera_id = camera_id
-        camera = device.cameras.get(camera_id)
-        camera_name = _get_camera_name(camera, camera_id)
-        entity_id = f"light.{device_config.identifier}_floodlight_{camera_id}"
-
-        led_settings = camera.get("ledSettings", {}) if camera else {}
-        is_enabled = led_settings.get("isEnabled", False)
-        brightness = led_settings.get("ledLevel", 255)
-
-        super().__init__(
-            entity_id,
-            f"{device_config.name} - {camera_name} Floodlight",
-            [LightFeatures.ON_OFF, LightFeatures.DIM],
-            {
-                LightAttributes.STATE: LightStates.ON if is_enabled else LightStates.OFF,
-                LightAttributes.BRIGHTNESS: brightness,
-            },
-            cmd_handler=self.handle_command,
-        )
-
-    async def handle_command(self, entity: Light, cmd_id: str, params: dict[str, Any] | None) -> StatusCodes:
-        """Handle light commands."""
-        if cmd_id == LightCommands.ON:
-            brightness = params.get("brightness", 255) if params else 255
-            success = await self._device.set_camera_floodlight(self._camera_id, True, brightness)
-            if success:
-                self.attributes[LightAttributes.STATE] = LightStates.ON
-                self.attributes[LightAttributes.BRIGHTNESS] = brightness
-                return StatusCodes.OK
+        try:
+            if cmd_id == SelectCommands.SELECT_OPTION:
+                option = params.get("option") if params else None
+                return await self._select_camera(option)
+            elif cmd_id == SelectCommands.SELECT_NEXT:
+                return await self._cycle(1)
+            elif cmd_id == SelectCommands.SELECT_PREVIOUS:
+                return await self._cycle(-1)
+            elif cmd_id == SelectCommands.SELECT_FIRST:
+                options = self.attributes[SelectAttributes.OPTIONS]
+                return await self._select_camera(options[0]) if options else StatusCodes.BAD_REQUEST
+            elif cmd_id == SelectCommands.SELECT_LAST:
+                options = self.attributes[SelectAttributes.OPTIONS]
+                return await self._select_camera(options[-1]) if options else StatusCodes.BAD_REQUEST
+            return StatusCodes.NOT_IMPLEMENTED
+        except Exception as err:
+            _LOG.error("Select command %s failed: %s", cmd_id, err, exc_info=True)
             return StatusCodes.SERVER_ERROR
-        elif cmd_id == LightCommands.OFF:
-            success = await self._device.set_camera_floodlight(self._camera_id, False, 0)
-            if success:
-                self.attributes[LightAttributes.STATE] = LightStates.OFF
-                return StatusCodes.OK
+
+    async def _select_camera(self, camera_name: str) -> StatusCodes:
+        if not camera_name or camera_name not in self.attributes[SelectAttributes.OPTIONS]:
+            return StatusCodes.BAD_REQUEST
+        self.attributes[SelectAttributes.CURRENT_OPTION] = camera_name
+        self._push_state()
+        return await self._media_player._select_source(camera_name)
+
+    async def _cycle(self, direction: int) -> StatusCodes:
+        options = self.attributes[SelectAttributes.OPTIONS]
+        current = self.attributes[SelectAttributes.CURRENT_OPTION]
+        try:
+            idx = options.index(current)
+            new_idx = (idx + direction) % len(options)
+            return await self._select_camera(options[new_idx])
+        except (ValueError, IndexError):
             return StatusCodes.SERVER_ERROR
-        return StatusCodes.NOT_IMPLEMENTED
+
+    def _push_state(self) -> None:
+        api = self._api_ref
+        if not api or not api.configured_entities.contains(self.id):
+            return
+        api.configured_entities.update_attributes(self.id, {
+            SelectAttributes.STATE: SelectStates.ON,
+            SelectAttributes.CURRENT_OPTION: self.attributes[SelectAttributes.CURRENT_OPTION],
+        })
+
+    def update_from_media_player(self, camera_name: str) -> None:
+        if camera_name in self.attributes[SelectAttributes.OPTIONS]:
+            self.attributes[SelectAttributes.CURRENT_OPTION] = camera_name
+            self._push_state()

@@ -1,6 +1,6 @@
 {
   "driver_id": "unifi",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "min_core_api": "0.22.0",
   "name": {
     "en": "UniFi Network & Protect"
@@ -36,5 +36,5 @@
       }
     ]
   },
-  "release_date": "2026-03-07"
+  "release_date": "2026-03-08"
 }

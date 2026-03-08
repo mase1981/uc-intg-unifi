@@ -49,6 +49,7 @@ jobs:
                 --collect-all zeroconf \
                 --collect-all ucapi \
                 --collect-all ucapi_framework \
+                --collect-all PIL \
                 --hidden-import intg_${INTG_NAME}.driver \
                 --hidden-import intg_${INTG_NAME}.device \
                 --hidden-import intg_${INTG_NAME}.config \
