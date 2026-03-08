@@ -1,7 +1,6 @@
 # UniFi Network & Protect Integration for Unfolded Circle Remote
 
 ![UniFi](https://img.shields.io/badge/UniFi-Network%20%26%20Protect-0559C9?style=flat-square&logo=ubiquiti)
-
 [![GitHub Release](https://img.shields.io/github/v/release/mase1981/uc-intg-unifi?style=flat-square)](https://github.com/mase1981/uc-intg-unifi/releases)
 ![License](https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square)
 [![GitHub issues](https://img.shields.io/github/issues/mase1981/uc-intg-unifi?style=flat-square)](https://github.com/mase1981/uc-intg-unifi/issues)
@@ -34,7 +33,19 @@ Control your UniFi Network and Protect devices from your Unfolded Circle Remote 
 | UniFi Cloud Key Gen2+ | Username/Password | Network + Protect |
 | Self-hosted Controller | Username/Password | Network only |
 
-> **Note:** Local administrator accounts only. Cloud/SSO accounts are not supported.
+> **Note:** Cloud/SSO accounts are not supported. You must create a local administrator account (see below).
+
+### Creating a Local Admin Account
+
+1. Log in to your UniFi Console (https://your-console-ip)
+2. Go to **Settings** → **Admins & Users**
+3. Click **Add Admin**
+4. Fill in username and password
+5. Set role to **Administrator**
+6. Under **Account Type**, select **Local Access Only**
+7. Click **Add**
+
+Use this local account's username and password when configuring the integration.
 
 ---
 
