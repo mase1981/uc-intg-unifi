@@ -722,6 +722,26 @@ class UniFiDevice(PollingDevice):
             {"recordingSettings": {"videoResolution": resolution}}
         )
 
+    async def get_camera_snapshot_bytes(self, camera_id: str) -> bytes | None:
+        """Fetch raw snapshot JPEG bytes from a Protect camera."""
+        if not self._session:
+            return None
+        import time
+        ts = int(time.time() * 1000)
+        url = f"https://{self.address}/proxy/protect/api/cameras/{camera_id}/snapshot?ts={ts}"
+        try:
+            async with self._session.get(url, headers=self._get_headers()) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if data and (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"):
+                        return data
+                    _LOG.warning("[%s] Invalid snapshot data from camera %s", self.log_id, camera_id)
+                    return None
+                _LOG.warning("[%s] Snapshot %s returned %d", self.log_id, camera_id, resp.status)
+        except Exception as err:
+            _LOG.warning("[%s] Snapshot %s failed: %s", self.log_id, camera_id, err)
+        return None
+
     async def take_camera_snapshot(self, camera_id: str) -> bool:
         """Request camera to take a snapshot."""
         return await self._api_post(f"/proxy/protect/api/cameras/{camera_id}/snapshot")
