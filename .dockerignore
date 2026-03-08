@@ -1,0 +1,12 @@
+venv/
+venv-wsl/
+.venv/
+__pycache__/
+*.pyc
+.git/
+artifacts/
+*.egg-info/
+.pytest_cache/
+.idea/
+.vscode/
+*.md

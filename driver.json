@@ -1,0 +1,40 @@
+{
+  "driver_id": "unifi",
+  "version": "1.2.3",
+  "min_core_api": "0.22.0",
+  "name": {
+    "en": "UniFi Network & Protect"
+  },
+  "icon": "custom:unifi-logo.png",
+  "description": {
+    "en": "Integration for UniFi Network (WAN stats, WiFi control, client tracking) and UniFi Protect (cameras, motion detection, privacy mode, floodlights, locks)"
+  },
+  "developer": {
+    "name": "Meir Miyara",
+    "email": "meir.miyara@gmail.com",
+    "url": "https://github.com/mase1981"
+  },
+  "home_page": "https://github.com/mase1981/uc-intg-unifi",
+  "support": "https://github.com/mase1981/uc-intg-unifi/issues",
+  "setup_data_schema": {
+    "title": {
+      "en": "UniFi Console Setup"
+    },
+    "settings": [
+      {
+        "id": "info",
+        "label": {
+          "en": "Setup Information"
+        },
+        "field": {
+          "label": {
+            "value": {
+              "en": "This integration connects to your UniFi Console (Dream Machine, Cloud Key, or self-hosted controller). Requires a local administrator account (username/password). Cloud/SSO accounts are not supported."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "release_date": "2026-03-07"
+}
