@@ -37,8 +37,8 @@ Control your UniFi Network and Protect devices from your Unfolded Circle Remote 
 
 ### Creating a Local Admin Account
 
-1. Log in to your UniFi Console (https://your-console-ip)
-2. Go to **Settings** → **Admins & Users**
+1. Log in to your UniFi Console from external: https://unifi.ui.com/
+2. Go to **Settings** → **People**
 3. Click **Add Admin**
 4. Fill in username and password
 5. Set role to **Administrator**
